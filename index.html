@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bobo's Firefly Forest</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #0d1b2a;
+  font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif;
+}
+#gameCanvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+#muteBtn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  background: #ff9f1c;
+  color: #fff;
+  font-size: 26px;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #cc7a00;
+  transition: transform 0.1s;
+  z-index: 10;
+}
+#muteBtn:active { transform: translateY(4px); box-shadow: 0 0 0 #cc7a00; }
+#instructions {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ffe6a7;
+  font-size: 18px;
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.6);
+  z-index: 10;
+}
+</style>
+</head>
+<body>
+<button id="muteBtn" aria-label="Mute">🔊</button>
+<canvas id="gameCanvas"></canvas>
+<div id="instructions">Move mouse to catch fireflies! 🖱️</div>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize(){ W=canvas.width=innerWidth; H=canvas.height=innerHeight; }
+window.addEventListener('resize', resize); resize();
+
+// Audio system using Web Audio API
+let audioCtx = null;
+let muted = false;
+const muteBtn = document.getElementById('muteBtn');
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playTone(freq, type, duration, vol=0.15, when=0) {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime + when;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + duration);
+}
+
+function playCollect() {
+  if (muted || !audioCtx) return;
+  playTone(880, 'sine', 0.15, 0.12);
+  playTone(1175, 'sine', 0.25, 0.08, 0.08);
+}
+
+function playWinMusic() {
+  if (muted || !audioCtx) return;
+  const melody = [523, 659, 784, 1047, 784, 1047, 1175, 1047];
+  melody.forEach((f, i) => playTone(f, 'triangle', 0.35, 0.1, i * 0.25));
+  [0, 2, 4, 6].forEach((i) => playTone(392, 'sine', 0.6, 0.08, i * 0.25));
+}
+
+function playPop() {
+  if (muted || !audioCtx) return;
+  playTone(200, 'sawtooth', 0.08, 0.08);
+}
+
+muteBtn.addEventListener('click', () => {
+  initAudio();
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+});
+
+// Input
+let jar = { x: W/2, y: H/2, r: 45 };
+let keys = {};
+window.addEventListener('mousemove', e => {
+  initAudio();
+  jar.x = e.clientX; jar.y = e.clientY;
+});
+window.addEventListener('touchmove', e => {
+  initAudio();
+  jar.x = e.touches[0].clientX; jar.y = e.touches[0].clientY;
+  e.preventDefault();
+}, {passive:false});
+window.addEventListener('keydown', e => {
+  initAudio();
+  keys[e.key] = true;
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// Game state
+const TARGET = 12;
+const TIME_LIMIT = 90; // seconds
+let caught = 0;
+let timeLeft = TIME_LIMIT;
+let over = false;
+let started = false;
+let lastT = performance.now();
+let particles = [];
+let stars = [];
+let fireflies = [];
+
+function rand(min, max) { return Math.random() * (max - min) + min; }
+
+function makeStar() {
+  return {
+    x: rand(0, W), y: rand(0, H*0.7),
+    size: rand(1, 3),
+    alpha: rand(0.3, 0.9),
+    pulse: rand(0.02, 0.06)
+  };
+}
+for (let i=0;i<60;i++) stars.push(makeStar());
+
+function makeFirefly() {
+  const hues = [50, 120, 190, 280, 330];
+  const hue = hues[Math.floor(Math.random()*hues.length)];
+  return {
+    x: rand(50, W-50), y: rand(50, H-50),
+    vx: rand(-1.2, 1.2), vy: rand(-0.8, 0.8),
+    r: 10,
+    hue: hue,
+    pulse: rand(0.05, 0.15),
+    phase: rand(0, Math.PI*2),
+    glow: rand(15, 25)
+  };
+}
+for (let i=0;i<TARGET;i++) fireflies.push(makeFirefly());
+
+function makeParticle(x, y, hue) {
+  const p = [];
+  for (let i=0;i<8;i++) {
+    const ang = (Math.PI*2/8)*i + rand(0, 0.5);
+    p.push({
+      x, y,
+      vx: Math.cos(ang)*rand(2,5),
+      vy: Math.sin(ang)*rand(2,5),
+      life: 1,
+      hue,
+      size: rand(3,6)
+    });
+  }
+  return p;
+}
+
+function update(dt) {
+  if (over) return;
+  if (!started) started = true;
+
+  // Keyboard jar movement
+  const speed = 8;
+  if (keys['ArrowLeft'] || keys['a']) jar.x -= speed;
+  if (keys['ArrowRight'] || keys['d']) jar.x += speed;
+  if (keys['ArrowUp'] || keys['w']) jar.y -= speed;
+  if (keys['ArrowDown'] || keys['s']) jar.y += speed;
+  jar.x = Math.max(jar.r, Math.min(W-jar.r, jar.x));
+  jar.y = Math.max(jar.r, Math.min(H-jar.r, jar.y));
+
+  timeLeft -= dt;
+  if (timeLeft <= 0) { timeLeft = 0; endGame(); }
+
+  stars.forEach(s => { s.alpha += s.pulse; if (s.alpha > 1 || s.alpha < 0.2) s.pulse *= -1; });
+
+  fireflies.forEach(f => {
+    f.x += f.vx; f.y += f.vy;
+    f.vx += rand(-0.15, 0.15); f.vy += rand(-0.1, 0.1);
+    f.vx = Math.max(-2.5, Math.min(2.5, f.vx));
+    f.vy = Math.max(-1.8, Math.min(1.8, f.vy));
+    if (f.x < 30) f.vx = Math.abs(f.vx);
+    if (f.x > W-30) f.vx = -Math.abs(f.vx);
+    if (f.y < 30) f.vy = Math.abs(f.vy);
+    if (f.y > H-30) f.vy = -Math.abs(f.vy);
+    f.phase += f.pulse;
+
+    const dx = jar.x - f.x, dy = jar.y - f.y, dist = Math.hypot(dx, dy);
+    if (dist < jar.r + f.r + 10) {
+      // Caught!
+      caught++;
+      playCollect();
+      particles.push(...makeParticle(f.x, f.y, f.hue));
+      Object.assign(f, makeFirefly());
+      if (caught >= TARGET) endGame();
+    }
+  });
+
+  for (let i=particles.length-1;i>=0;i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.15; // gravity
+    p.life -= 0.03;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function endGame() {
+  over = true;
+  playWinMusic();
+}
+
+function draw() {
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0d1b2a');
+  grad.addColorStop(1, '#1b263b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  stars.forEach(s => {
+    ctx.globalAlpha = Math.max(0.1, Math.min(1, s.alpha));
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // Hills
+  ctx.fillStyle = '#14213d';
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  ctx.quadraticCurveTo(W*0.3, H-80, W*0.6, H-40);
+  ctx.lineTo(W, H-60); ctx.lineTo(W, H); ctx.lineTo(0, H);
+  ctx.fill();
+  ctx.fillStyle = '#0f172a';
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  ctx.quadraticCurveTo(W*0.2, H-50, W*0.5, H-90);
+  ctx.lineTo(W, H-30); ctx.lineTo(W, H); ctx.lineTo(0, H);
+  ctx.fill();
+
+  // Fireflies
+  fireflies.forEach(f => {
+    const glow = f.glow + Math.sin(f.phase)*5;
+    const g = ctx.createRadialGradient(f.x, f.y, 2, f.x, f.y, glow);
+    g.addColorStop(0, `hsla(${f.hue}, 100%, 70%, 1)`);
+    g.addColorStop(1, `hsla(${f.hue}, 100%, 50%, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(f.x, f.y, glow, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(f.x, f.y, 3, 0, Math.PI*2); ctx.fill();
+  });
+
+  // Jar
+  const jarGlow = 20 + caught * 8;
+  const jg = ctx.createRadialGradient(jar.x, jar.y, 10, jar.x, jar.y, jar.r + jarGlow);
+  jg.addColorStop(0, `hsla(45, 100%, 70%, ${0.3 + caught*0.04})`);
+  jg.addColorStop(1, 'hsla(45, 100%, 60%, 0)');
+  ctx.fillStyle = jg;
+  ctx.beginPath(); ctx.arc(jar.x, jar.y, jar.r + jarGlow, 0, Math.PI*2); ctx.fill();
+
+  ctx.strokeStyle = '#ffe6a7';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(jar.x, jar.y, jar.r, 0, Math.PI*2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,230,167,0.15)';
+  ctx.beginPath(); ctx.arc(jar.x, jar.y, jar.r, 0, Math.PI*2); ctx.fill();
+
+  // Jar label
+  ctx.fillStyle = '#ffe6a7';
+  ctx.font = 'bold 22px Comic Sans MS, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(caught + ' / ' + TARGET, jar.x, jar.y);
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = `hsl(${p.hue}, 100%, 60%)`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // UI
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px Comic Sans MS, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('🌟 ' + caught + ' / ' + TARGET, 20, 45);
+  ctx.textAlign = 'right';
+  ctx.fillText('⏰ ' + Math.ceil(timeLeft), W - 20, 45);
+
+  if (over) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff9f1c';
+    ctx.font = 'bold ' + Math.min(80, W/8) + 'px Comic Sans MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Good Game, Bobo!', W/2, H/2 - 30);
+    ctx.fillStyle = '#ffe6a7';
+    ctx.font = 'bold ' + Math.min(36, W/16) + 'px Comic Sans MS, sans-serif';
+    ctx.fillText('You caught ' + caught + ' fireflies! 🎉', W/2, H/2 + 50);
+  }
+}
+
+function loop(now) {
+  const dt = (now - lastT) / 1000;
+  lastT = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
